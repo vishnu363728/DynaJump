@@ -1,0 +1,967 @@
+TASK_NAME: pick_ball
+
+FILE: __init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the object lift environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: pick_ball/pick_ball_env_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from dataclasses import MISSING
+
+import isaaclab.sim as sim_utils
+from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, DeformableObjectCfg, RigidObjectCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer import OffsetCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+
+from . import mdp
+
+##
+# Pre-defined configs
+##
+from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
+
+FRAME_MARKER_SMALL_CFG = FRAME_MARKER_CFG.copy()
+FRAME_MARKER_SMALL_CFG.markers["frame"].scale = (0.10, 0.10, 0.10)
+
+
+##
+# Scene definition
+##
+
+@configclass
+class PickBallSceneCfg(InteractiveSceneCfg):
+    """Configuration for the pick_ball scene with a robot and task-specific objects.
+    
+    This is the abstract base implementation, the exact scene is defined in the derived classes
+    which need to set the robot and end-effector frames.
+    """
+
+    # robots: will be populated by agent env cfg
+    robot: ArticulationCfg = MISSING
+    # end-effector sensor: will be populated by agent env cfg
+    ee_frame: FrameTransformerCfg = MISSING
+    
+    # Main interaction object
+    ball: RigidObjectCfg = MISSING  # will be populated in joint_pos_env file
+    
+    # Table (if needed for manipulation tasks)
+    table = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Table",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0], rot=[0.707, 0, 0, 0.707]),
+        spawn=UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
+    )
+
+    # Ground plane
+    plane = AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0, 0, -1.05]),
+        spawn=GroundPlaneCfg(),
+    )
+
+    # Lighting
+    light = AssetBaseCfg(
+        prim_path="/World/light",
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+    )
+
+
+##
+# MDP settings
+##
+
+@configclass
+class CommandsCfg:
+    """Command terms for the MDP."""
+    
+    object_pose = mdp.UniformPoseCommandCfg(
+        asset_name="robot",
+        body_name=MISSING,  # will be set by agent env cfg
+        resampling_time_range=(5.0, 5.0),
+        debug_vis=True,
+        ranges=mdp.UniformPoseCommandCfg.Ranges(
+            pos_x=(0.4, 0.6), pos_y=(-0.25, 0.25), pos_z=(0.25, 0.5),
+            roll=(0.0, 0.0), pitch=(0.0, 0.0), yaw=(0.0, 0.0)
+        ),
+    )
+
+
+@configclass
+class ActionsCfg:
+    """Action specifications for the MDP."""
+
+    # Will be set by agent env cfg
+    arm_action: mdp.JointPositionActionCfg | mdp.DifferentialInverseKinematicsActionCfg = MISSING
+    gripper_action: mdp.BinaryJointPositionActionCfg = MISSING
+
+
+@configclass
+class ObservationsCfg:
+    """Observation specifications for the MDP."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """Observations for policy group."""
+
+        # Standard robot observations
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        actions = ObsTerm(func=mdp.last_action)
+
+        # End-effector observations
+        eef_pos = ObsTerm(func=mdp.ee_pos)
+        eef_quat = ObsTerm(func=mdp.ee_quat)
+        gripper_pos = ObsTerm(func=mdp.gripper_pos)
+
+        # Object observations
+        ball_position = ObsTerm(func=mdp.object_position_in_robot_root_frame)
+
+        # Distance observations
+        rel_ee_ball_distance = ObsTerm(func=mdp.rel_ee_object_distance)
+
+        # Command observations
+        target_ball_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "object_pose"})
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
+class EventCfg:
+    """Configuration for events."""
+
+    # Standard reset events
+    reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
+
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "position_range": (-0.1, 0.1),
+            "velocity_range": (0.0, 0.0),
+        },
+    )
+
+    # Object position randomization
+    reset_ball_position = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        mode="reset",
+        params={
+            "pose_range": {"x": (0.4, 0.6), "y": (-0.25, 0.25), "z": (0.05, 0.1)},
+            "velocity_range": {},
+            "asset_cfg": SceneEntityCfg("ball", body_names="ball"),
+        },
+    )
+
+    # Physics material randomization
+    robot_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (0.8, 1.25),
+            "dynamic_friction_range": (0.8, 1.25),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 16,
+        },
+    )
+
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the MDP."""
+
+    # Task-specific reward terms
+    approach_ee_ball = RewTerm(func=mdp.approach_ee_ball, weight=2.0, params={"threshold": 0.2})
+    
+    # Ball manipulation rewards
+    ball_lifting = RewTerm(
+        func=mdp.ball_lifting_success,
+        weight=5.0,
+        params={"asset_cfg": SceneEntityCfg("ball")},
+    )
+
+    # Distance rewards
+    reaching_ball = RewTerm(func=mdp.object_ee_distance, params={"std": 0.1}, weight=1.0)
+
+    # Goal tracking rewards
+    ball_goal_tracking = RewTerm(
+        func=mdp.object_goal_distance,
+        params={"std": 0.3, "minimal_height": 0.04, "command_name": "object_pose"},
+        weight=16.0,
+    )
+
+    # Standard penalty terms
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
+    joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-4)
+
+
+@configclass
+class TerminationsCfg:
+    """Termination terms for the MDP."""
+
+    # Standard terminations
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+
+    # Task-specific termination conditions
+    ball_dropping = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": -0.05, "asset_cfg": SceneEntityCfg("ball")},
+    )
+
+    # Success terminations
+    success = DoneTerm(func=mdp.ball_lifted_success)
+
+
+@configclass
+class CurriculumCfg:
+    """Curriculum terms for the MDP."""
+
+    action_rate = CurrTerm(
+        func=mdp.modify_reward_weight,
+        params={"term_name": "action_rate", "weight": -1e-1, "num_steps": 10000}
+    )
+
+
+##
+# Environment configuration
+##
+
+@configclass
+class PickBallEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the pick_ball environment."""
+
+    # Scene settings
+    scene: PickBallSceneCfg = PickBallSceneCfg(num_envs=4096, env_spacing=2.5)
+    
+    # Basic settings
+    observations: ObservationsCfg = ObservationsCfg()
+    actions: ActionsCfg = ActionsCfg()
+    
+    # MDP settings
+    rewards: RewardsCfg = RewardsCfg()
+    terminations: TerminationsCfg = TerminationsCfg()
+    events: EventCfg = EventCfg()
+    commands: CommandsCfg = CommandsCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
+
+    def __post_init__(self):
+        """Post initialization."""
+        
+        # General settings
+        self.decimation = 2  # Control frequency divider
+        self.episode_length_s = 5.0  # Episode length in seconds
+        
+        # Viewer settings (for visualization)
+        self.viewer.eye = (-2.0, 2.0, 2.0)  # Camera position
+        self.viewer.lookat = (0.0, 0.0, 0.5)  # Camera target
+        
+        # Simulation settings
+        self.sim.dt = 0.01  # 100Hz physics simulation
+        self.sim.render_interval = self.decimation  # Rendering frequency
+        
+        # Physics settings
+        self.sim.physx.bounce_threshold_velocity = 0.2
+        self.sim.physx.bounce_threshold_velocity = 0.01
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physx.friction_correlation_distance = 0.00625
+ENDFILE
+
+FILE: pick_ball/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the object stack environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: pick_ball/config/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the cabinet environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: pick_ball/config/franka/joint_pos_env_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
+from isaaclab.utils import configclass
+from isaaclab_tasks.manager_based.manipulation.pick_ball import mdp
+from isaaclab_tasks.manager_based.manipulation.pick_ball.pick_ball_env_cfg import (  # isort: skip
+    FRAME_MARKER_SMALL_CFG,
+    PickBallEnvCfg,
+)
+
+##
+# Pre-defined configs
+##
+from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort: skip
+
+
+@configclass
+class FrankaPickBallEnvCfg(PickBallEnvCfg):
+    """Configuration for Franka Panda robot performing pick_ball task."""
+    
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        
+        # Set franka as robot
+        self.scene.robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        
+        # Set Actions for the specific robot type (franka)
+        self.actions.arm_action = mdp.JointPositionActionCfg(
+            asset_name="robot",
+            joint_names=["panda_joint.*"],
+            scale=1.0,
+            use_default_offset=True,
+        )
+        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
+            asset_name="robot",
+            joint_names=["panda_finger.*"],
+            open_command_expr={"panda_finger_.*": 0.04},
+            close_command_expr={"panda_finger_.*": 0.0},
+        )
+
+        # Set the body name for the end effector
+        self.commands.object_pose.body_name = "panda_hand"
+
+        # Implement the ball object in the scene
+        self.scene.ball = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Ball",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.055], rot=[1, 0, 0, 0]),
+            spawn=sim_utils.SphereCfg(
+                radius=0.025,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    solver_position_iteration_count=16,
+                    solver_velocity_iteration_count=1,
+                    max_angular_velocity=1000.0,
+                    max_linear_velocity=1000.0,
+                    max_depenetration_velocity=5.0,
+                    disable_gravity=False,
+                ),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+            ),
+        )
+
+        # Listens to the required transforms
+        # IMPORTANT: The order of the frames in the list is important. The first frame is the tool center point (TCP)
+        # the other frames are the fingers
+        self.scene.ee_frame = FrameTransformerCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+            debug_vis=False,
+            visualizer_cfg=FRAME_MARKER_SMALL_CFG.replace(prim_path="/Visuals/EndEffectorFrameTransformer"),
+            target_frames=[
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+                    name="ee_tcp",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.1034),
+                    ),
+                ),
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_leftfinger",
+                    name="tool_leftfinger",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.046),
+                    ),
+                ),
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_rightfinger",
+                    name="tool_rightfinger",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.046),
+                    ),
+                ),
+            ],
+        )
+        
+        # Override task-specific reward parameters
+        self.rewards.approach_ee_ball.params["threshold"] = 0.05
+        self.rewards.ball_lifting.params["asset_cfg"].joint_names = ["panda_finger_.*"]
+
+
+@configclass
+class FrankaPickBallEnvCfg_PLAY(FrankaPickBallEnvCfg):
+    """Play/demo configuration for Franka Panda robot performing pick_ball task with reduced complexity."""
+    
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        
+        # Configure scene for play/demo mode
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
+ENDFILE
+
+FILE: pick_ball/config/franka/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configuration for task name environments with Franka robot."""
+
+import gymnasium as gym
+
+from . import agents
+
+gym.register(
+    id="Isaac-Pick-Ball-Franka-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaPickBallEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickBallPPORunnerCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Pick-Ball-Franka-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaPickBallEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickBallPPORunnerCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+ENDFILE
+
+FILE: pick_ball/config/franka/agents/rsl_rl_ppo_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from isaaclab.utils import configclass
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+
+
+@configclass
+class PickBallRslRlPPORunnerCfg(RslRlPpoRunnerCfg):
+    """Configuration for the RSL-RL PPO runner."""
+    max_iterations = 1000
+    save_interval = 50
+    experiment_name = "pick_ball_ppo"
+    run_name = "pick_ball_ppo_run"
+    load_run = -1
+    checkpoint = "model_*.pt"
+    num_steps_per_env = 24
+    max_episode_length = 1000
+    seed = 1
+    num_envs = 4096
+    resume = False
+ENDFILE
+
+FILE: pick_ball/config/franka/agents/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+ENDFILE
+
+FILE: pick_ball/mdp/observations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+import isaaclab.utils.math as math_utils
+from isaaclab.assets import ArticulationData, RigidObjectData
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import FrameTransformerData
+from isaaclab.utils.math import subtract_frame_transforms
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+
+def object_position_in_robot_root_frame(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+) -> torch.Tensor:
+    """The position of the ball in the robot's root frame.
+    
+    This function computes the position of the main interaction object relative to the robot's
+    base frame, which is useful for understanding spatial relationships independent of the
+    robot's position in the world.
+    
+    Args:
+        env: The environment instance.
+        robot_cfg: Configuration for the robot entity. Defaults to SceneEntityCfg("robot").
+        object_cfg: Configuration for the main object entity. Defaults to SceneEntityCfg("ball").
+        
+    Returns:
+        The position of the ball in the robot's root frame as a tensor of shape (num_envs, 3).
+    """
+    robot = env.scene[robot_cfg.name]
+    main_object = env.scene[object_cfg.name]
+    object_pos_w = main_object.data.root_pos_w[:, :3]
+    object_pos_b, *_ = subtract_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, object_pos_w)
+    return object_pos_b
+
+
+def rel_ee_object_distance(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The distance between the end-effector and the main interaction object.
+    
+    This observation provides the relative position vector from the end-effector to the
+    main object, which is crucial for approach and manipulation behaviors.
+    
+    Args:
+        env: The environment instance.
+        
+    Returns:
+        The distance vector from end-effector to object as a tensor of shape (num_envs, 3).
+    """
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    object_data: ArticulationData = env.scene["ball"].data
+    return object_data.root_pos_w - ee_tf_data.target_pos_w[..., 0, :]
+
+
+def fingertips_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the fingertips relative to the environment origins.
+    
+    This function provides the absolute positions of both fingertips in the environment,
+    which is useful for fine manipulation tasks and grasp analysis.
+    
+    Args:
+        env: The environment instance.
+        
+    Returns:
+        The flattened positions of all fingertips as a tensor of shape (num_envs, 6).
+        The tensor contains [left_finger_x, left_finger_y, left_finger_z, right_finger_x, right_finger_y, right_finger_z].
+    """
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    fingertips_pos = ee_tf_data.target_pos_w[..., 1:, :] - env.scene.env_origins.unsqueeze(1)
+    return fingertips_pos.view(env.num_envs, -1)
+
+
+def ee_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the end-effector relative to the environment origins.
+    
+    This provides the absolute position of the robot's end-effector in the environment,
+    which is fundamental for most manipulation tasks.
+    
+    Args:
+        env: The environment instance.
+        
+    Returns:
+        The end-effector position as a tensor of shape (num_envs, 3).
+    """
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    ee_pos = ee_tf_data.target_pos_w[..., 0, :] - env.scene.env_origins
+    return ee_pos
+
+
+def ee_quat(env: ManagerBasedRLEnv, make_quat_unique: bool = True) -> torch.Tensor:
+    """The orientation of the end-effector in the environment frame.
+    
+    This provides the orientation of the robot's end-effector, which is important for
+    tasks that require specific approach angles or orientations.
+    
+    Args:
+        env: The environment instance.
+        make_quat_unique: If True, the quaternion is made unique by ensuring the real part is positive.
+        
+    Returns:
+        The end-effector quaternion as a tensor of shape (num_envs, 4).
+    """
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    ee_quat = ee_tf_data.target_quat_w[..., 0, :]
+    # make first element of quaternion positive
+    return math_utils.quat_unique(ee_quat) if make_quat_unique else ee_quat
+
+
+def ball_position(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the ball relative to the environment origins.
+    
+    Args:
+        env: The environment instance.
+        
+    Returns:
+        The ball position as a tensor of shape (num_envs, 3).
+    """
+    object_data = env.scene["ball"].data
+    return object_data.root_pos_w - env.scene.env_origins
+
+
+def ball_orientation(env: ManagerBasedRLEnv, make_quat_unique: bool = True) -> torch.Tensor:
+    """The orientation of the ball in the environment frame.
+    
+    Args:
+        env: The environment instance.
+        make_quat_unique: If True, the quaternion is made unique by ensuring the real part is positive.
+        
+    Returns:
+        The ball quaternion as a tensor of shape (num_envs, 4).
+    """
+    object_data = env.scene["ball"].data
+    object_quat = object_data.root_quat_w
+    return math_utils.quat_unique(object_quat) if make_quat_unique else object_quat
+
+
+def gripper_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The gripper joint positions.
+    
+    Args:
+        env: The environment instance.
+        
+    Returns:
+        The gripper joint positions as a tensor of shape (num_envs, 2).
+    """
+    robot_data: ArticulationData = env.scene["robot"].data
+    return robot_data.joint_pos[:, -2:]
+ENDFILE
+
+FILE: pick_ball/mdp/rewards.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+from isaaclab.assets import RigidObject
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import FrameTransformer
+from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+
+def approach_ee_ball(env: ManagerBasedRLEnv, threshold: float) -> torch.Tensor:
+    """Reward the robot for reaching the ball using inverse-square law.
+
+    It uses a piecewise function to reward the robot for reaching the ball.
+
+    .. math::
+
+        reward = \begin{cases}
+            2 * (1 / (1 + distance^2))^2 & \text{if } distance \leq threshold \\
+            (1 / (1 + distance^2))^2 & \text{otherwise}
+        \end{cases}
+
+    """
+    ee_tcp_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
+    ball_pos = env.scene["ball"].data.root_pos_w
+
+    # Compute the distance of the end-effector to the ball
+    distance = torch.norm(ball_pos - ee_tcp_pos, dim=-1, p=2)
+
+    # Reward the robot for reaching the ball
+    reward = 1.0 / (1.0 + distance**2)
+    reward = torch.pow(reward, 2)
+    return torch.where(distance <= threshold, 2 * reward, reward)
+
+
+def ball_lifting_success(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward for successfully lifting the ball.
+
+    The reward is given when the ball is lifted above the table surface.
+    """
+    ball_pos = env.scene["ball"].data.root_pos_w
+    table_height = 0.8  # Approximate table height
+    lifting_height = ball_pos[:, 2] - table_height
+    
+    # Reward for lifting the ball above table
+    reward = torch.clamp(lifting_height * 10.0, 0.0, 1.0)
+    return reward
+
+
+def object_ee_distance(
+    env: ManagerBasedRLEnv,
+    std: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Reward the agent for reaching the object using tanh-kernel."""
+    # extract the used quantities (to enable type-hinting)
+    object: RigidObject = env.scene[object_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    # Target object position: (num_envs, 3)
+    ball_pos_w = object.data.root_pos_w
+    # End-effector position: (num_envs, 3)
+    ee_w = ee_frame.data.target_pos_w[..., 0, :]
+    # Distance of the end-effector to the object: (num_envs,)
+    object_ee_distance = torch.norm(ball_pos_w - ee_w, dim=1)
+    return 1 - torch.tanh(object_ee_distance / std)
+
+
+def object_goal_distance(
+    env: ManagerBasedRLEnv,
+    std: float,
+    minimal_height: float,
+    command_name: str,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+) -> torch.Tensor:
+    """Reward the agent for tracking the goal pose using tanh-kernel."""
+    # extract the used quantities (to enable type-hinting)
+    robot: RigidObject = env.scene[robot_cfg.name]
+    object: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    # compute the desired position in the world frame
+    des_pos_b = command[:, :3]
+    des_pos_w, *_ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, des_pos_b)
+    # distance of the end-effector to the object: (num_envs,)
+    distance = torch.norm(des_pos_w - object.data.root_pos_w, dim=1)
+    # rewarded if the object is lifted above the threshold
+    return (object.data.root_pos_w[:, 2] > minimal_height) * (1 - torch.tanh(distance / std))
+
+
+def grasp_ball_success(
+    env: ManagerBasedRLEnv, threshold: float, open_joint_pos: float, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward for closing the fingers when being close to the ball.
+
+    The :attr:`threshold` is the distance from the ball at which the fingers should be closed.
+    The :attr:`open_joint_pos` is the joint position when the fingers are open.
+
+    Note:
+        It is assumed that zero joint position corresponds to the fingers being closed.
+    """
+    ee_tcp_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
+    ball_pos = env.scene["ball"].data.root_pos_w
+    gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
+
+    distance = torch.norm(ball_pos - ee_tcp_pos, dim=-1, p=2)
+    is_close = distance <= threshold
+
+    return is_close * torch.sum(open_joint_pos - gripper_joint_pos, dim=-1)
+ENDFILE
+
+FILE: pick_ball/mdp/terminations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Common functions that can be used to activate certain terminations for the pick_ball task.
+
+The functions can be passed to the :class:`isaaclab.managers.TerminationTermCfg` object to enable
+the termination introduced by the function.
+"""
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import combine_frame_transforms
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+
+def object_reached_goal(
+    env: ManagerBasedRLEnv,
+    command_name: str = "object_pose",
+    threshold: float = 0.02,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+) -> torch.Tensor:
+    """Termination condition for the object reaching the goal position.
+    
+    Args:
+        env: The environment.
+        command_name: The name of the command that is used to control the object.
+        threshold: The threshold for the object to reach the goal position. Defaults to 0.02.
+        robot_cfg: The robot configuration. Defaults to SceneEntityCfg("robot").
+        object_cfg: The object configuration. Defaults to SceneEntityCfg("ball").
+        
+    Returns:
+        Boolean tensor indicating whether each environment should terminate.
+    """
+    # extract the used quantities (to enable type-hinting)
+    robot: RigidObject = env.scene[robot_cfg.name]
+    object: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    # compute the desired position in the world frame
+    des_pos_b = command[:, :3]
+    des_pos_w, *_ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, des_pos_b)
+    # distance of the end-effector to the object: (num_envs,)
+    distance = torch.norm(des_pos_w - object.data.root_pos_w[:, :3], dim=1)
+    # rewarded if the object is lifted above the threshold
+    return distance < threshold
+
+
+def ball_lifted_success(
+    env: ManagerBasedRLEnv,
+    threshold: float = 0.1,
+    target_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+) -> torch.Tensor:
+    """Termination condition for completing the main objective of ball lifting.
+    
+    Args:
+        env: The environment.
+        threshold: Height threshold for success criteria.
+        target_cfg: Configuration for the ball object.
+        
+    Returns:
+        Boolean tensor indicating whether each environment should terminate.
+    """
+    target_object: RigidObject = env.scene[target_cfg.name]
+    
+    # Ball is successfully lifted if it's above the threshold height
+    ball_height = target_object.data.root_pos_w[:, 2]
+    table_height = 0.8  # Approximate table height
+    
+    success_condition = ball_height > (table_height + threshold)
+    
+    return success_condition
+
+
+def ball_dropped_failure(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+    position_threshold: float = 0.05,
+    joint_threshold: float = 0.01,
+) -> torch.Tensor:
+    """Termination condition for ball dropping failure.
+    
+    Args:
+        env: The environment.
+        robot_cfg: The robot configuration.
+        object_cfg: Configuration for the ball object.
+        position_threshold: Threshold for position-based criteria.
+        joint_threshold: Threshold for joint-based criteria.
+        
+    Returns:
+        Boolean tensor indicating whether each environment should terminate.
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    ball_object: RigidObject = env.scene[object_cfg.name]
+    
+    # Check if ball fell below table level
+    ball_height = ball_object.data.root_pos_w[:, 2]
+    ground_level = 0.0
+    
+    condition_1 = ball_height < ground_level
+    
+    # Additional failure condition: ball moved too far from robot
+    robot_pos = robot.data.root_pos_w
+    ball_pos = ball_object.data.root_pos_w
+    distance = torch.norm(ball_pos[:, :2] - robot_pos[:, :2], dim=1)
+    condition_2 = distance > 2.0  # 2 meters from robot base
+    
+    return torch.logical_or(condition_1, condition_2)
+
+
+def task_failed_conditions(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    max_ee_height: float = 1.0,
+    min_ee_height: float = 0.1,
+    max_distance_from_origin: float = 2.0,
+) -> torch.Tensor:
+    """Termination condition for task failure scenarios.
+    
+    Args:
+        env: The environment.
+        robot_cfg: The robot configuration.
+        max_ee_height: Maximum allowed end-effector height.
+        min_ee_height: Minimum allowed end-effector height.
+        max_distance_from_origin: Maximum allowed distance from origin.
+        
+    Returns:
+        Boolean tensor indicating whether each environment should terminate due to failure.
+    """
+    # Get end-effector position
+    ee_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
+    
+    # Check end-effector bounds
+    ee_too_high = ee_pos[:, 2] > max_ee_height
+    ee_too_low = ee_pos[:, 2] < min_ee_height
+    ee_too_far = torch.norm(ee_pos[:, :2], dim=1) > max_distance_from_origin
+    
+    # Combine failure conditions
+    failed = torch.logical_or(ee_too_high, ee_too_low)
+    failed = torch.logical_or(failed, ee_too_far)
+    
+    return failed
+ENDFILE
+
+FILE: pick_ball/mdp/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""This sub-module contains the functions that are specific to the task name environments."""
+
+from isaaclab.envs.mdp import *  # noqa: F401, F403
+
+from .observations import *  # noqa: F401, F403
+from .rewards import *  # noqa: F401, F403
+ENDFILE

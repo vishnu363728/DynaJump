@@ -78,6 +78,7 @@ class CabinetSceneCfg(InteractiveSceneCfg):
             ),
             "doors": ImplicitActuatorCfg(
                 joint_names_expr=["door_left_joint", "door_right_joint"],
+                
                 effort_limit=87.0,
                 velocity_limit=100.0,
                 stiffness=10.0,

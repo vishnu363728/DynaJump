@@ -1,0 +1,648 @@
+Based on the task description "lift a cup", I'll generate all the necessary files for a complete Isaac Lab manipulation task. Here's the implementation:
+
+TASK_NAME: cup_lifting
+
+FILE: __init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the object lift environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: task_name/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the cup lifting environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: task_name/task_name_env_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from dataclasses import MISSING
+
+import isaaclab.sim as sim_utils
+from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer import OffsetCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+
+from . import mdp
+
+FRAME_MARKER_SMALL_CFG = FRAME_MARKER_CFG.copy()
+FRAME_MARKER_SMALL_CFG.markers["frame"].scale = (0.10, 0.10, 0.10)
+
+@configclass
+class CupLiftingSceneCfg(InteractiveSceneCfg):
+    """Configuration for the cup lifting scene with a Franka Panda arm and a cup."""
+
+    # robots
+    robot: ArticulationCfg = MISSING
+    # end-effector sensor
+    ee_frame: FrameTransformerCfg = MISSING
+    
+    # The cup to be lifted
+    cup: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Cup",
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.1], rot=[1.0, 0.0, 0.0, 0.0]),
+        spawn=UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Kitchen/Plate.usd",
+            scale=(0.5, 0.5, 0.5),
+            rigid_props=RigidObjectCfg.RigidBodyPropertiesCfg(
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=1,
+                max_angular_velocity=1000.0,
+                max_linear_velocity=1000.0,
+                max_depenetration_velocity=5.0,
+                disable_gravity=False,
+            ),
+            collision_props=RigidObjectCfg.CollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_offset=0.02,
+                rest_offset=0.002,
+            ),
+        ),
+    )
+
+    # Table
+    table = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Table",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0], rot=[0.707, 0, 0, 0.707]),
+        spawn=UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
+    )
+
+    # Ground plane
+    plane = AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0, 0, -1.05]),
+        spawn=GroundPlaneCfg(),
+    )
+
+    # Lighting
+    light = AssetBaseCfg(
+        prim_path="/World/light",
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+    )
+
+@configclass
+class CommandsCfg:
+    """Command terms for the MDP."""
+    
+    cup_pose = mdp.UniformPoseCommandCfg(
+        asset_name="robot",
+        body_name=MISSING,  # will be set by agent env cfg
+        resampling_time_range=(5.0, 5.0),
+        debug_vis=True,
+        ranges=mdp.UniformPoseCommandCfg.Ranges(
+            pos_x=(0.4, 0.6), pos_y=(-0.1, 0.1), pos_z=(0.2, 0.4),
+            roll=(0.0, 0.0), pitch=(0.0, 0.0), yaw=(0.0, 0.0)
+        ),
+    )
+
+@configclass
+class ActionsCfg:
+    """Action specifications for the MDP."""
+
+    arm_action: mdp.JointPositionActionCfg | mdp.DifferentialInverseKinematicsActionCfg = MISSING
+    gripper_action: mdp.BinaryJointPositionActionCfg = MISSING
+
+@configclass
+class ObservationsCfg:
+    """Observation specifications for the MDP."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """Observations for policy group."""
+
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        actions = ObsTerm(func=mdp.last_action)
+        
+        # End-effector observations
+        eef_pos = ObsTerm(func=mdp.ee_pos)
+        eef_quat = ObsTerm(func=mdp.ee_quat)
+        gripper_pos = ObsTerm(func=mdp.gripper_pos)
+        
+        # Cup observations
+        cup_position = ObsTerm(func=mdp.cup_position_in_robot_root_frame)
+        cup_orientation = ObsTerm(func=mdp.cup_orientation)
+        
+        # Distance observations
+        rel_ee_cup_distance = ObsTerm(func=mdp.rel_ee_cup_distance)
+        
+        # Command observations
+        target_cup_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "cup_pose"})
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+
+@configclass
+class EventCfg:
+    """Configuration for events."""
+
+    reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "position_range": (-0.1, 0.1),
+            "velocity_range": (0.0, 0.0),
+        },
+    )
+    
+    reset_cup_position = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        mode="reset",
+        params={
+            "pose_range": {"x": (0.45, 0.55), "y": (-0.1, 0.1), "z": (0.1, 0.1)},
+            "velocity_range": {},
+            "asset_cfg": SceneEntityCfg("cup", body_names="Plate"),
+        },
+    )
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the MDP."""
+
+    # Approach rewards
+    approach_ee_cup = RewTerm(func=mdp.approach_ee_cup, weight=2.0, params={"threshold": 0.1})
+    
+    # Grasping rewards
+    grasp_cup = RewTerm(
+        func=mdp.grasp_cup,
+        weight=5.0,
+        params={"threshold": 0.05, "open_joint_pos": 0.04, "asset_cfg": SceneEntityCfg("robot", joint_names=["panda_finger_.*"])},
+    )
+    
+    # Lifting rewards
+    cup_is_lifted = RewTerm(
+        func=mdp.cup_is_lifted,
+        weight=10.0,
+        params={"minimal_height": 0.2, "asset_cfg": SceneEntityCfg("cup")},
+    )
+    
+    # Goal tracking
+    cup_goal_tracking = RewTerm(
+        func=mdp.cup_goal_distance,
+        weight=16.0,
+        params={"std": 0.3, "minimal_height": 0.2, "command_name": "cup_pose"},
+    )
+    
+    # Penalties
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
+    joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-4)
+
+@configclass
+class TerminationsCfg:
+    """Termination terms for the MDP."""
+
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    
+    # Success condition
+    success = DoneTerm(
+        func=mdp.cup_reached_goal,
+        params={"command_name": "cup_pose", "threshold": 0.05},
+    )
+    
+    # Failure conditions
+    cup_dropped = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": 0.05, "asset_cfg": SceneEntityCfg("cup")},
+    )
+
+@configclass
+class CupLiftingEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the cup lifting environment."""
+
+    # Scene settings
+    scene: CupLiftingSceneCfg = CupLiftingSceneCfg(num_envs=4096, env_spacing=2.5)
+    
+    # Basic settings
+    observations: ObservationsCfg = ObservationsCfg()
+    actions: ActionsCfg = ActionsCfg()
+    commands: CommandsCfg = CommandsCfg()
+    
+    # MDP settings
+    rewards: RewardsCfg = RewardsCfg()
+    terminations: TerminationsCfg = TerminationsCfg()
+    events: EventCfg = EventCfg()
+
+    def __post_init__(self):
+        """Post initialization."""
+        self.decimation = 2
+        self.episode_length_s = 5.0
+        
+        # Viewer settings
+        self.viewer.eye = (-2.0, 2.0, 2.0)
+        self.viewer.lookat = (0.5, 0.0, 0.5)
+        
+        # Simulation settings
+        self.sim.dt = 0.01
+        self.sim.render_interval = self.decimation
+        
+        # Physics settings
+        self.sim.physx.bounce_threshold_velocity = 0.2
+        self.sim.physx.bounce_threshold_velocity = 0.01
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physx.friction_correlation_distance = 0.00625
+ENDFILE
+
+FILE: task_name/mdp/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""This sub-module contains the functions that are specific to the cup lifting environments."""
+
+from isaaclab.envs.mdp import *  # noqa: F401, F403
+
+from .observations import *  # noqa: F401, F403
+from .rewards import *  # noqa: F401, F403
+from .terminations import *  # noqa: F401, F403
+ENDFILE
+
+FILE: task_name/mdp/observations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+import isaaclab.utils.math as math_utils
+from isaaclab.assets import ArticulationData, RigidObjectData
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import FrameTransformerData
+from isaaclab.utils.math import subtract_frame_transforms
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+def cup_position_in_robot_root_frame(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
+) -> torch.Tensor:
+    """The position of the cup in the robot's root frame."""
+    robot = env.scene[robot_cfg.name]
+    cup = env.scene[cup_cfg.name]
+    cup_pos_w = cup.data.root_pos_w[:, :3]
+    cup_pos_b, *_ = subtract_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cup_pos_w)
+    return cup_pos_b
+
+def rel_ee_cup_distance(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The distance between the end-effector and the cup."""
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    cup_data: RigidObjectData = env.scene["cup"].data
+    return cup_data.root_pos_w - ee_tf_data.target_pos_w[..., 0, :]
+
+def cup_orientation(env: ManagerBasedRLEnv, make_quat_unique: bool = True) -> torch.Tensor:
+    """The orientation of the cup in the environment frame."""
+    cup_data = env.scene["cup"].data
+    cup_quat = cup_data.root_quat_w
+    return math_utils.quat_unique(cup_quat) if make_quat_unique else cup_quat
+
+def fingertips_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the fingertips relative to the environment origins."""
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    fingertips_pos = ee_tf_data.target_pos_w[..., 1:, :] - env.scene.env_origins.unsqueeze(1)
+    return fingertips_pos.view(env.num_envs, -1)
+
+def ee_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the end-effector relative to the environment origins."""
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    ee_pos = ee_tf_data.target_pos_w[..., 0, :] - env.scene.env_origins
+    return ee_pos
+
+def ee_quat(env: ManagerBasedRLEnv, make_quat_unique: bool = True) -> torch.Tensor:
+    """The orientation of the end-effector in the environment frame."""
+    ee_tf_data: FrameTransformerData = env.scene["ee_frame"].data
+    ee_quat = ee_tf_data.target_quat_w[..., 0, :]
+    return math_utils.quat_unique(ee_quat) if make_quat_unique else ee_quat
+
+def gripper_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the gripper joints."""
+    robot = env.scene["robot"]
+    return robot.data.joint_pos[:, -2:]
+ENDFILE
+
+FILE: task_name/mdp/rewards.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+from isaaclab.assets import RigidObject
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import FrameTransformer
+from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+def approach_ee_cup(env: ManagerBasedRLEnv, threshold: float) -> torch.Tensor:
+    """Reward the robot for reaching the cup using inverse-square law."""
+    ee_tcp_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
+    cup_pos = env.scene["cup"].data.root_pos_w
+
+    distance = torch.norm(cup_pos - ee_tcp_pos, dim=-1, p=2)
+    reward = 1.0 / (1.0 + distance**2)
+    reward = torch.pow(reward, 2)
+    return torch.where(distance <= threshold, 2 * reward, reward)
+
+def grasp_cup(
+    env: ManagerBasedRLEnv, threshold: float, open_joint_pos: float, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward for closing the fingers when being close to the cup."""
+    ee_tcp_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
+    cup_pos = env.scene["cup"].data.root_pos_w
+    gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
+
+    distance = torch.norm(cup_pos - ee_tcp_pos, dim=-1, p=2)
+    is_close = distance <= threshold
+
+    return is_close * torch.sum(open_joint_pos - gripper_joint_pos, dim=-1)
+
+def cup_is_lifted(
+    env: ManagerBasedRLEnv, minimal_height: float, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward the agent for lifting the cup above the minimal height."""
+    cup: RigidObject = env.scene[asset_cfg.name]
+    return torch.where(cup.data.root_pos_w[:, 2] > minimal_height, 1.0, 0.0)
+
+def cup_goal_distance(
+    env: ManagerBasedRLEnv,
+    std: float,
+    minimal_height: float,
+    command_name: str,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
+) -> torch.Tensor:
+    """Reward the agent for tracking the goal pose using tanh-kernel."""
+    robot = env.scene[robot_cfg.name]
+    cup = env.scene[cup_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    
+    des_pos_b = command[:, :3]
+    des_pos_w, *_ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, des_pos_b)
+    
+    distance = torch.norm(des_pos_w - cup.data.root_pos_w, dim=1)
+    return (cup.data.root_pos_w[:, 2] > minimal_height) * (1 - torch.tanh(distance / std))
+ENDFILE
+
+FILE: task_name/mdp/terminations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Common functions that can be used to activate certain terminations for the cup lifting task."""
+
+from __future__ import annotations
+
+import torch
+from typing import TYPE_CHECKING
+
+from isaaclab.assets import RigidObject
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import combine_frame_transforms
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+def cup_reached_goal(
+    env: ManagerBasedRLEnv,
+    command_name: str = "cup_pose",
+    threshold: float = 0.02,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
+) -> torch.Tensor:
+    """Termination condition for the cup reaching the goal position."""
+    robot = env.scene[robot_cfg.name]
+    cup = env.scene[cup_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    
+    des_pos_b = command[:, :3]
+    des_pos_w, *_ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, des_pos_b)
+    
+    distance = torch.norm(des_pos_w - cup.data.root_pos_w[:, :3], dim=1)
+    return distance < threshold
+ENDFILE
+
+FILE: task_name/config/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the cup lifting environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+ENDFILE
+
+FILE: task_name/config/franka/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configuration for cup lifting environments with Franka robot."""
+
+import gymnasium as gym
+
+from . import agents
+
+gym.register(
+    id="Isaac-Lift-Cup-Franka-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaCupLiftingEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CupLiftingPPORunnerCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Cup-Franka-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaCupLiftingEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CupLiftingPPORunnerCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+ENDFILE
+
+FILE: task_name/config/franka/joint_pos_env_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
+from isaaclab.utils import configclass
+
+from isaaclab_tasks.manager_based.manipulation.cup_lifting import mdp
+from isaaclab_tasks.manager_based.manipulation.cup_lifting.cup_lifting_env_cfg import (
+    FRAME_MARKER_SMALL_CFG,
+    CupLiftingEnvCfg,
+)
+
+from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
+
+@configclass
+class FrankaCupLiftingEnvCfg(CupLiftingEnvCfg):
+    """Configuration for Franka Panda robot performing cup lifting task."""
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Set franka as robot
+        self.scene.robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        
+        # Set Actions
+        self.actions.arm_action = mdp.JointPositionActionCfg(
+            asset_name="robot",
+            joint_names=["panda_joint.*"],
+            scale=1.0,
+            use_default_offset=True,
+        )
+        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
+            asset_name="robot",
+            joint_names=["panda_finger.*"],
+            open_command_expr={"panda_finger_.*": 0.04},
+            close_command_expr={"panda_finger_.*": 0.0},
+        )
+        
+        # End-effector frame
+        self.scene.ee_frame = FrameTransformerCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+            debug_vis=False,
+            visualizer_cfg=FRAME_MARKER_SMALL_CFG.replace(prim_path="/Visuals/EndEffectorFrameTransformer"),
+            target_frames=[
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+                    name="ee_tcp",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.1034),
+                    ),
+                ),
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_leftfinger",
+                    name="tool_leftfinger",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.046),
+                    ),
+                ),
+                FrameTransformerCfg.FrameCfg(
+                    prim_path="{ENV_REGEX_NS}/Robot/panda_rightfinger",
+                    name="tool_rightfinger",
+                    offset=OffsetCfg(
+                        pos=(0.0, 0.0, 0.046),
+                    ),
+                ),
+            ],
+        )
+        
+        # Override reward parameters
+        self.rewards.grasp_cup.params["open_joint_pos"] = 0.04
+        self.rewards.grasp_cup.params["asset_cfg"].joint_names = ["panda_finger_.*"]
+
+@configclass
+class FrankaCupLiftingEnvCfg_PLAY(FrankaCupLiftingEnvCfg):
+    """Play/demo configuration for Franka Panda robot performing cup lifting task."""
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Configure scene for play/demo mode
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
+ENDFILE
+
+FILE: task_name/config/franka/agents/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+ENDFILE
+
+FILE: task_name/config/franka/agents/rsl_rl_ppo_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+from isaaclab.utils import configclass
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+
+@configclass
+class CupLiftingRslRlPPORunnerCfg(RslRlPPORunnerCfg):
+    """Configuration for the RSL-RL PPO runner for cup lifting task."""
+    
+    num_steps_per_env = 24
+    max_iterations = 1000
+    save_interval = 50
+    experiment_name = "cup_lifting_ppo"
+    run_name = "cup_lifting_ppo_run"
+    load_run = -1
+    checkpoint = "model_*.pt"
+    max_episode_length = 1000
+    seed = 1
+    num_envs = 4096
+    resume = False
+ENDFILE

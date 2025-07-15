@@ -1,0 +1,902 @@
+<think>
+We are creating a manipulation task for lifting a cup.
+ The robot is Franka Panda with parallel gripper.
+
+ Steps to break down the task:
+ 1. Approach the cup from above until it's close enough (within a threshold).
+ 2. Align the gripper so that it can grasp the cup properly (maybe check orientation or just proximity?).
+    However, note that in Isaac Lab we don't have complex object interactions for deformable objects by default.
+    We are using rigid body physics and simple collision detection.
+
+ Since the task is "lift a cup", let's assume:
+ - The cup is placed on a table at the beginning of the episode.
+ - The robot must approach the cup, grasp it (close the gripper), and lift it above the table until its base clears the table.
+
+ We'll design two main reward functions for this task:
+
+ 1. Approach reward: Reward the robot when the end-effector is close to the cup's handle or center? 
+    But note: we don't have a handle, so maybe just proximity in z-axis (or any axis) but typically approach from above.
+
+    However, let's think about it: We want the robot to lift the cup. The standard way for Franka Panda is to use the gripper.
+    So perhaps:
+
+    - First, we need an approach reward that encourages the end-effector to be close in x and y (or just z?).
+      But note: if we only look at z, then the robot might lift without approaching properly.
+
+ 2. Grasp reward: When the gripper is closed on the cup.
+
+ 3. Lift reward: When the cup is lifted above a certain height.
+
+ We'll break it into three stages:
+
+ Stage 1: Approach
+   - The end-effector should be close to the cup (within a threshold in x and y, or just z? Let's use distance from the cup).
+
+ Stage 2: Grasp
+   - Once close enough, the robot closes the gripper.
+
+ Stage 3: Lift
+   - Then lifts the cup above the table.
+
+ We'll design:
+
+ Approach reward:
+   - Use inverse-square law for the end-effector to approach the cup (in z-axis? or in all axes?)
+
+ But note: The typical way is to have a distance-based reward. Let's use Euclidean distance in 3D space.
+
+ However, we want to avoid rewarding just any proximity and encourage lifting from above.
+
+ We can do:
+
+   - First, check if the end-effector is close enough (within a threshold) so that it can grasp.
+     Then give a high reward for being within that threshold. Otherwise, low reward but still positive until very far.
+
+ But note: The task description says "lift", which implies two things: approach and then lift.
+
+ Let's define:
+
+   - Approach condition: When the end-effector is above the cup (z-axis) and close in x-y.
+     We can use a combined distance metric? Or separate conditions?
+
+ Alternatively, we can break it into three steps:
+
+ 1. Approach until the robot can grasp (i.e., when the gripper can touch the cup).
+    This might be defined by being within a certain height above the cup and close in x-y.
+
+ 2. Grasp: When the gripper is closed enough to hold the cup.
+
+ 3. Lift: When the cup is lifted above a threshold.
+
+ But note: The robot arm has multiple joints, so we need to control both arm and gripper.
+
+ We'll design:
+
+   - Approach reward (stage1): Reward for being close in x-y and having an appropriate z height.
+     Maybe two separate conditions? Or one condition that combines all three?
+
+ Let's keep it simple with a single distance metric from the end-effector to the cup, but we want to encourage
+ approaching from above. We can use:
+
+   - Distance = sqrt((x_diff)^2 + (y_diff)^2)  [ignore z for now? or include?] and then reward that.
+
+ However, note: The standard way in Isaac Lab is to have a distance-based reward until the object is grasped.
+
+ But let's look at the provided examples:
+
+   - In the cabinet example, they had approach_ee_handle (distance from end-effector to handle) and align_ee_handle (orientation).
+
+ We can do similar for cup lifting? The cup doesn't have handles. So we'll use a simple distance-based reward until grasp.
+
+ Steps:
+
+ 1. Approach: When the robot is close enough in x-y and z above, then give high reward.
+    But note: if we only check x-y, then the robot might approach from any side. We want to lift so maybe just one direction?
+
+ Let's define a target frame for the cup? Actually, let's use the root of the cup.
+
+ Approach condition:
+
+   - The end-effector should be within a threshold (say 0.1) in x and y, and above by at least some amount (maybe not required until grasp).
+
+ But note: We want to avoid rewarding just any proximity. So we can have two conditions:
+
+   Condition A: End-effector is close enough in the horizontal plane (x-y).
+   Condition B: The gripper is closed.
+
+ However, let's stick with a single distance metric for approach and then use another condition for grasp.
+
+ Alternatively, we can think of it as three stages:
+
+ Stage 1: Approach until the end-effector is within a certain height above the cup and close in x-y.
+   - We'll define two thresholds: one for horizontal (x-y) proximity and one for vertical clearance.
+
+ But note: The task is "lift", so we don't necessarily need to approach from directly above. However, it's easier if we do.
+
+ Let me propose:
+
+ 1. Approach reward:
+      Reward the robot when the end-effector is close enough in x-y (within a threshold) and above by at least some minimal height.
+      Otherwise, just give a low reward for being somewhat close but not meeting both conditions? Or break it into two stages?
+
+ We can have two separate rewards:
+
+   - Approach_reward: Only depends on horizontal distance until the robot is very close horizontally, then drops to zero if too far vertically?
+     Actually, let's keep it as one stage and use a combined condition.
+
+ 2. Grasp reward:
+      When the gripper closes (joint positions become small enough) and the end-effector is still within the graspable region (close in x-y).
+
+ 3. Lift reward:
+      After grasping, lift the cup above a certain height until it's stable or clear of obstacles.
+
+ However, note that we are using a rigid body for the cup, so lifting means increasing its z-coordinate.
+
+ We'll design:
+
+   - Approach_reward: Euclidean distance in x-y from end-effector to cup (without considering z) and then use an inverse-square law.
+     But wait, what about z? Maybe we want to encourage being above. So let's combine horizontal and vertical?
+
+ Alternatively, we can have two separate stages for approach and grasp.
+
+ Let me restructure:
+
+   Stage 1: Approach the cup until it is within a certain distance (say 0.2) in all three dimensions.
+      - This ensures that the robot arm end-effector is close to the cup from any direction? But note, we want to lift so maybe only above?
+
+   We can define an approach condition by having:
+
+        reward_approach = 1 / (1 + distance^2)
+
+   where distance is in all three dimensions.
+
+   Stage 2: Grasp the cup when the end-effector is within a smaller threshold and the gripper closes.
+      - But note, we don't want to close the gripper until the robot is very close. So:
+
+        condition_grasp = (distance < grasp_threshold) & (gripper_closed)
+
+   Then give a high reward for being in that state.
+
+   Stage 3: Lift the cup above a certain height threshold.
+
+   We can also have an intermediate stage where we check if the gripper is closed and then lift.
+
+ But note: The task description does not specify multiple stages. It just says "lift".
+
+ Let's keep it simple with two stages:
+
+   - Approach until close enough (say 0.1) in all three dimensions? Or maybe only horizontal?
+     Since lifting requires being above, we can use a combined condition for approach.
+
+   However, let me think about the typical way: In Isaac Lab, often they have an approach reward that is independent of z and then a grasp reward that checks contact or proximity.
+
+   We'll do:
+
+        Stage 1: Approach (horizontal only) until close in x-y.
+        Stage 2: Grasp when the end-effector is above the cup by at least some minimal height and within horizontal threshold, and the gripper closes.
+
+   But note: The robot arm has to be aligned properly. We can also check orientation? Maybe not for a simple lift.
+
+   Alternatively, we can have:
+
+        Stage 1: Approach until close in x-y (horizontal) and above by at least minimal_height.
+        Then stage 2 is closing the gripper.
+
+   Let's define two thresholds:
+
+        approach_threshold_xy = 0.1
+        approach_threshold_z = -0.05   # This means we want to be above the cup, so z should be greater than this (negative threshold)
+
+   But note: The initial position of the cup is on the table at z=-0.4 or something? We'll set it accordingly.
+
+   Actually, let's look at the environment setup:
+
+        - Table with height 0.8m from ground to top.
+        - Cup placed on the table (so its base is at about 0.5m above ground).
+
+   The robot arm starts at a default position and we want it to lift the cup.
+
+   We'll define:
+
+        Stage 1: Approach reward for being within approach_threshold_xy in x-y and having z greater than approach_threshold_z.
+            This can be done by checking if (x_diff^2 + y_diff^2) < threshold_xy^2 AND (z_diff > threshold_z)
+
+        But note, we want to encourage the robot to lift from above. So maybe:
+
+            reward_approach = 0
+            condition1: horizontal distance <= approach_threshold_xy
+            condition2: vertical clearance >= approach_threshold_z
+
+            Then if both conditions are true, give a positive reward.
+
+   However, let's keep it simpler and use one combined condition for the first stage (approach) that includes all three dimensions?
+
+   We can do:
+
+        distance = torch.norm(cup_pos - ee_tcp_pos, dim=-1)
+        approach_reward = 1.0 / (1 + distance**2)
+
+        But then we need to define a threshold in which this reward becomes high.
+
+   Alternatively, let's break it into two stages with two separate rewards:
+
+        Stage 1: Approach the cup until close enough so that if you were to close the gripper at that point, it would be successful.
+            We can use an approach condition based on being above and within horizontal threshold.
+
+        Stage 2: Grasp reward when the end-effector is very close (within grasp_threshold) and the gripper closes.
+
+   But note: The task might require a sequence of actions. Let's design:
+
+        - Approach_reward: Euclidean distance in all three dimensions from the cup to the end-effector.
+          We want this to be small, so we can use an inverse-square law on that distance.
+
+        - Grasp_reward: When the gripper is closed and the end-effector is still within a graspable region (close enough).
+
+   Then:
+
+        Stage 3: Lift_reward: After grasping, lift the cup above a certain height until it's clear of the table.
+
+   We'll define three reward functions:
+
+        - approach_ee_cup: Euclidean distance in all dimensions.
+        - grasp_cup: When the gripper is closed and the end-effector is close enough to the cup (within a threshold).
+        - lift_cup: The height of the cup above the table.
+
+   But note: We want to avoid rewarding just any proximity. So we can have:
+
+        approach_reward = 1 / (1 + distance^2) but only until the robot gets very close, then it becomes zero? Or keep it positive?
+
+   Let me look at Isaac Lab examples for pick-and-place:
+
+        They had:
+            - object_ee_distance: Euclidean distance from end-effector to object.
+            - reaching_object: Reward that uses tanh on the distance.
+
+   We can do similar:
+
+        reward_approach = 1 - torch.tanh(distance / std)
+
+        But note, we want to have a threshold for approach. Let's set two stages:
+
+        Stage 1 (approach): Euclidean distance in all dimensions must be less than an approach_threshold.
+            Then give a positive reward.
+
+        Stage 2 (grasp): When the gripper is closed and the end-effector is still within grasp_threshold_xy, then give another reward.
+
+   However, note that we are using two separate actions: arm and gripper. We need to design accordingly.
+
+   Let's define:
+
+        - Approach_reward: Euclidean distance from the cup (in world frame) to the end-effector (ee_tcp_pos). 
+          Use a tanh kernel with std set appropriately so that when very close, it becomes 1, but we want to encourage being above.
+
+        But wait, if we use all three dimensions, then the robot might approach from any side. We want to lift, so maybe only z matters for clearance?
+
+   Alternatively, let's define two separate conditions:
+
+        Condition A: Horizontal distance (x-y) <= 0.1
+        Condition B: Vertical clearance (ee_tcp_z - cup_z) >= 0.05
+
+        Then we can have a reward that is the product of these two conditions? Or just use them separately.
+
+   We'll design three rewards:
+
+        Reward 1: Approach_reward = 
+            if horizontal distance <= approach_threshold_xy and vertical clearance >= approach_threshold_z:
+                then use tanh on the Euclidean distance (which now includes z) but with a higher threshold for success?
+            else, low reward.
+
+        But note: We want to guide the robot step by step. So let's have:
+
+            - First, an approach reward that is independent of grasp and lift.
+            - Then, a grasp reward that requires being close enough (both horizontal and vertical) but not necessarily grasping contact?
+            - Finally, a lift reward.
+
+   However, note: The task does not require multiple objects. We are just lifting one cup.
+
+   Let me propose:
+
+        Stage 1: Approach the cup until it is within a threshold in x-y and above by at least minimal_height.
+            This can be done with two separate conditions or combined.
+
+        But let's keep it simple and use one Euclidean distance reward that includes all three dimensions, but we'll set thresholds for each dimension?
+
+   Alternatively, we can have:
+
+        - Approach_reward: Euclidean distance in x-y (ignore z) until a horizontal threshold.
+          Then when the robot is above by at least minimal_height, give an additional boost.
+
+        But note: We want to avoid having too many conditions. Let's stick with one combined condition for approach and then two more for grasp and lift.
+
+   After thinking, let me use:
+
+        - Approach_reward: Euclidean distance in all three dimensions (from the cup) must be less than a threshold.
+          Then reward = 1 / (distance^2 + 1)
+
+        - Grasp_reward: When the gripper is closed enough to hold the object. We can check if the end-effector is close enough and then use joint position.
+
+        But note: The standard way for Franka Panda is to have two finger joints that control the closing of the fingers.
+
+   Let's define:
+
+        - Approach_reward: Euclidean distance from the cup (in world frame) to the end-effector (ee_tcp_pos). 
+          We want this to be small, so we use an inverse-square law. But note, if we only check x-y and z separately, it might not work.
+
+   I think a simpler way is:
+
+        - Approach_reward: Euclidean distance in all three dimensions from the cup to the end-effector.
+          Use tanh kernel with std set appropriately (e.g., 0.1) so that when very close, reward becomes 1.
+
+        - Grasp_reward: When the gripper joint positions are below a threshold (say 0.02). We can use:
+
+            grasp_condition = (gripper_joint_pos < 0.02)
+
+          Then reward_grasp = torch.where(grasp_condition, 1.0, 0.0) but we want to encourage it so maybe not.
+
+        Alternatively, let's have a grasp_reward that is the negative of the gripper joint positions until they are closed enough?
+
+   But note: The task requires lifting, which implies grasping and then lifting.
+
+   We'll design:
+
+        - Approach_reward: Euclidean distance from the cup (in world frame) to the end-effector. 
+          Use tanh kernel with std=0.1 so that when very close, reward becomes 1.
+
+        - Grasp_reward: When the gripper is closed enough and the end-effector is still within a graspable region (close enough). We can use:
+
+            condition_grasp = (gripper_joint_pos < 0.02) & (distance <= grasp_threshold)
+
+          Then give a high reward for being in that state.
+
+        - Lift_reward: When the cup's z position is above a certain threshold (say 0.5).
+
+   However, note that we are using rigid body physics and the cup might be lifted by any part of the gripper? 
+   But typically, we want to lift it from its base or handle if present.
+
+   Since our cup doesn't have handles, let's assume it's a simple cylinder (or box) with a flat bottom. We'll use:
+
+        - Lift_reward: The z position of the cup must be above 0.5.
+
+   But note: The initial table height is set to -1.05 for the ground plane? And the cup is placed on top of that?
+
+   Let me check the provided template files:
+
+        In task_name_env_cfg.py, we have a table asset with pos=[0.5, 0, 0] and rot=[0.707, 0, 0, 0.707].
+
+   We'll set up the environment accordingly.
+
+   Now, let's define the thresholds:
+
+        - Approach_threshold: Let's say 0.2 (so when distance < 0.2, we start giving high reward).
+        - Grasp_threshold: Maybe a bit closer than approach? Say 0.1.
+        - Lift threshold: The cup must be lifted to at least z=0.5.
+
+   But note: We want the robot to lift the cup above the table (which is at z=-1.05 + thickness, but let's assume the table top is at z=-0.4).
+
+   Actually, in the template we have:
+
+        self.scene.plane = AssetBaseCfg(
+            prim_path="/World/GroundPlane",
+            init_state=AssetBaseCfg.InitialStateCfg(pos=[0, 0, -1.05]),
+            spawn=GroundPlaneCfg(),
+        )
+
+   So the ground is at z=-1.05. The table asset in task_name_env_cfg.py has pos=[0.5, 0, 0] and rot=[0.707,0,0,0.707]. 
+   We need to set the cup's initial position appropriately.
+
+   Let me assume:
+
+        - Table: placed at [0.5, 0, 0] with rotation (so it's a table that is rotated? Maybe we don't care about rotation for now).
+        - Cup: initially on the table, so its base should be above the ground by some height and then lifted.
+
+   We'll set:
+
+        cup_initial_position = [x, y, z] where z is around 0.5 (if the table top is at 0, then we might need to adjust).
+
+   But note: The robot arm starts with its end-effector above? Or below?
+
+   Let me look at the Franka Panda configuration in joint_pos_env_cfg.py:
+
+        self.scene.ee_frame = FrameTransformerCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+            debug_vis=False,
+            visualizer_cfg=FRAME_MARKER_SMALL_CFG.replace(prim_path="/Visuals/EndEffectorFrameTransformer"),
+            target_frames=[
+                ... 
+            ],
+        )
+
+   The end-effector frame is defined at panda_link0 (the base of the arm) and then transformed to the TCP.
+
+   We'll set the initial position of the cup accordingly.
+
+   Now, let's write the code for each file.
+
+   Task name: lift_cup
+
+   We are going to generate:
+
+        __init__.py
+        task_name/__init__.py (with task_name being "lift_cup")
+        task_name/task_name_env_cfg.py (with TASK_NAME_PASCAL = LiftCup)
+        ... and so on for each file.
+
+   Note: The provided template files have placeholders that we must replace with the specific names.
+
+   Let's start by defining:
+
+        In __init__.py:
+            We don't need to change anything because it's empty.
+
+        In task_name/__init__.py (which will be lift_cup/__init__.py):
+            We'll import from isaaclab_tasks.manager_based.lift_cup
+
+        But note: The template provided for task_name_env_cfg.py has a placeholder {TASK_NAME_PASCAL} which we set to LiftCup.
+
+   However, let's check the example in the cabinet:
+
+        They had:
+            __init__.py
+            config/__init__.py
+            config/franka/joint_pos_env_cfg.py
+
+   We'll follow that structure.
+
+   Let me list the files again and replace placeholders accordingly.
+
+   Important: The task name must be chosen appropriately. Since we are lifting a cup, let's call it "lift_cup".
+
+   But note: In the template for mdp functions, they use {TASK_NAME} as the variable to replace. We'll set:
+
+        TASK_NAME = "lift_cup"
+        TASK_NAME_PASCAL = "LiftCup"
+
+   However, in the environment configuration file (task_name_env_cfg.py) we have:
+
+        class LiftCupEnvCfg(ManagerBasedRLEnvCfg):
+
+   But wait, let me check: The template provided for task_name_env_cfg.py has {TASK_NAME} as a placeholder. We'll replace it.
+
+   Let's go step by step.
+
+   First, the __init__.py files are empty and just import from parent packages.
+
+   Then, in task_name/task_name_env_cfg.py (which becomes lift_cup/lift_cup_env_cfg.py):
+
+        We need to define:
+            - The scene with a table and a cup.
+            - The robot as Franka Panda.
+            - The end-effector frame transformer for the arm.
+
+   Let me write the code accordingly.
+
+   Note: We are using RigidObjectCfg for the cup because it's rigid.
+
+   Steps:
+
+        1. Define the scene configuration (lift_cup_scene_cfg) with a table, ground plane, and light.
+        2. Then define the environment configuration (LiftCupEnvCfg) that uses this scene.
+
+   We'll set up two files: one for the scene and one for the environment.
+
+   But note: The template provided has an abstract base class in task_name_env_cfg.py? Let me look:
+
+        In the example, they have:
+            @configclass
+            class {TASK_NAME_PASCAL}SceneCfg(InteractiveSceneCfg):
+                ...
+
+        Then we'll define a derived class for Franka.
+
+   However, note that the provided template is already structured with an abstract scene and then a concrete one for Franka.
+
+   We are going to follow:
+
+        - task_name_env_cfg.py (lift_cup_env_cfg) has two classes: {TASK_NAME_PASCAL}SceneCfg and {TASK_NAME_PASCAL}EnvCfg.
+
+   Let me write the code accordingly.
+
+   But note: The example in the cabinet uses a derived class for Franka. We'll do similarly.
+
+   Now, let's define:
+
+        TASK_NAME = "lift_cup"
+        TASK_NAME_PASCAL = "LiftCup"
+
+   And then replace all placeholders with these names and appropriate values.
+
+   However, note that the provided template files have many TODO comments and placeholders. We must remove them or fill appropriately.
+
+   Let me start by generating each file one by one.
+</think>
+```python
+TASK_NAME: lift_cup
+
+FILE: __init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the lift_cup environments."""
+
+# We leave this file empty since we don't want to expose any configs in this package directly.
+# We still need this file to import the "config" module in the parent package.
+
+ENDFILE
+
+FILE: task_name/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Configurations for the lift_cup environments."""
+
+from __future__ import annotations
+import gymnasium as gym
+
+from .config import *  # noqa: F401, E722
+
+
+gym.register(
+    id="Isaac-Lift-Cup-Franka-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.task_name_env_cfg:LiftCupEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__:}:rl_games_ppo_cfg.yaml",  # This line is incomplete in the template, but we'll keep it as per standard practice
+    },
+)
+
+gym.register(
+    id="Isaac-Lift-Cup-Franka-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.task_name_env_cfg:LiftCupEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__:}:rl_games_ppo_cfg.yaml",  # This line is incomplete in the template, but we'll keep it as per standard practice
+    },
+)
+
+ENDFILE
+
+FILE: task_name/task_name_env_cfg.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+import isaaclab.sim as sim_utils
+from isaaclab.utils import configclass
+from isaaclab_tasks.manager_based.lift_cup.mdp import *  # noqa: F401, E402
+
+
+##
+# Pre-defined configs
+##
+
+FRAME_MARKER_CFG = sim_utils.MarkerCfg(
+    prim_path="/Visuals/FrameMarker",
+    mesh_name="frame_marker",
+    scale=(0.05, 0.05, 0.05),
+    color=(0.8, 0.1, 0.1),
+)
+
+FRAME_MARKER_CUP_CFG = FRAME_MARKER_CFG.copy()
+FRAME_MARKER_CUP_CFG.color = (0.1, 0.8, 0.1)
+
+
+##
+# Scene definition
+##
+
+@configclass
+class LiftCupSceneCfg(sim_utils.Scene):
+    """Configuration for the lift_cup scene with a robot and task-specific objects.
+    
+    This is the abstract base implementation, the exact scene is defined in the derived classes
+    which need to set the robot and end-effector frames.
+    """
+
+    # robots: will be populated by agent env cfg
+    panda_arm = sim_utils.ArticulationCfg(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Panda/planar_panda/tabletop_gripper/tabletop_gripper_instanceable.usd"),
+        init_state=sim_utils.ArticulationCfg.InitialStateCfg(
+            pos=(0, 0, 0),
+            rot=(1.0, 0, 0, 0)
+        ),
+    )
+
+    # end-effector sensor: will be populated by agent env cfg
+    ee_frame = sim_utils.FrameTransformerCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+        debug_vis=False,
+        visualizer_cfg=FRAME_MARKER_CFG.replace(prim_path="/Visuals/EndEffectorFrameTransformer"),
+        target_frames=[
+            sim_utils.FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+                name="ee_tcp",
+                offset=sim_utils.OffsetCfg(pos=(0.0, 0.0, 0.1034), rot=(0.7071, 0.0, -0.7071, 0.0))
+            ],
+    )
+
+    # Main interaction object (cup)
+    cup = sim_utils.RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Cup",
+        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Cups/cylinder_usd/cylinder.usd"),
+        init_state=sim_utils.ArticulationCfg.InitialStateCfg(
+            pos=(0, 0, -0.4),
+            rot=(1.0, 0, 0, 0)
+        ),
+    )
+
+    # Table (if needed for manipulation tasks)
+    table = sim_utils.AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Table",
+        init_state=sim_utils.AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, -1.0]),
+        spawn=sim_utils.GroundPlaneCfg(),
+    )
+
+    # Ground plane
+    ground_plane = sim_utils.AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        init_state=sim_utils.AssetBaseCfg.InitialStateCfg(pos=[0, 0, -1.05]),
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+    )
+
+    # Lighting
+    light = sim_utils.AssetBaseCfg(
+        prim_path="/World/light",
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+    )
+
+
+##
+# MDP settings
+##
+
+@configclass
+class CommandsCfg:
+    """Command terms for the MDP."""
+    
+    # No commands needed for this task
+    
+@configclass
+class ActionsCfg:
+    """Action specifications for the MDP."""
+
+    # Will be set by agent env cfg
+    arm_action: sim_utils.JointPositionActionCfg = MISSING
+    gripper_action: sim_utils.BinaryJointPositionActionCfg = MISSING
+
+
+##
+# Environment configuration
+##
+
+@configclass
+class LiftCupEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the lift_cup environment."""
+
+    # Scene settings
+    scene: LiftCupSceneCfg = LiftCupSceneCfg(num_envs=4096, env_spacing=2.5)
+    
+    # Basic settings
+    observations: ObservationsCfg = ObservationsCfg()
+    actions: ActionsCfg = ActionsCfg()
+    
+    # MDP settings (add/remove based on your task needs)
+    rewards: RewardsCfg = RewardsCfg()
+    terminations: TerminationsCfg = TerminationsCfg()
+
+    def __post_init__(self):
+        """Post initialization."""
+        
+        # General settings
+        self.decimation = 2  # Control frequency divider
+        self.episode_length_s = 5.0  # Episode length in seconds
+        
+        # Viewer settings (for visualization)
+        self.viewer.eye = (-1.0, 1.0, 1.0)  # Camera position
+        self.viewer.lookat = (0.0, 0.0, -0.4)  # Camera target
+
+# Note: The rest of the template files are incomplete and need to be filled with specific task details.
+# We've generated only the necessary parts for this task.
+
+ENDFILE
+
+FILE: task_name/mdp/__init__.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""This sub-module contains the functions that are specific to the lift_cup environments."""
+
+from isaaclab.envs.mdp import *  # noqa: F401, E402
+
+
+ENDFILE
+
+FILE: task_name/mdp/observations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+import torch
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedRLEnv
+
+
+@configclass
+class ObservationsCfg:
+    """Observation specifications for the MDP."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """Observations for policy group."""
+        
+        # Standard robot observations
+        joint_pos = ObsTerm(func=lambda env: env.scene["panda_arm"].data.joint_pos_rel)
+        joint_vel = ObsTerm(func=lambda env: env.scene["panda_arm"].data.joint_vel_rel)
+
+        # End-effector observations
+        ee_pos = ObsTerm(func=lambda env: env.scene["ee_frame"].data.target_pos_w[:, 0, :3])
+        ee_quat = ObsTerm(func=lambda env: env.scene["ee_frame"].data.target_quat_w[:, 0, :4])
+
+        # Object observations
+        cup_position = ObsTerm(
+            func=lambda env: env.scene["cup"].data.root_pos_w - env.scene.env_origins,
+            params={"std": 0.1}
+        )
+        
+        cup_orientation = ObsTerm(
+            func=lambda env: env.scene["cup"].data.root_quat_w,
+            params={"make_unique": True, "std": 0.3}
+        )
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+
+
+def object_position_in_robot_root_frame(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the cup in the robot's root frame."""
+    robot = env.scene["panda_arm"]
+    cup = env.scene["cup"]
+    # Get cup position and orientation
+    cup_pos_w = cup.data.root_pos_w[:, :3]
+    cup_quat_w = cup.data.root_quat_w
+    
+    # Transform to robot frame
+    cup_pos_b, _ = subtract_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cup_pos_w)
+    
+    return cup_pos_b
+
+
+def ee_fingertips_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The position of the fingertips relative to the environment origins."""
+    ee_tf_data = env.scene["ee_frame"].data
+    # Get fingertip positions from frame transformer (if available)
+    if hasattr(ee_tf_data, 'target_pos_w'):
+        return ee_tf_data.target_pos_w[..., 1:, :] - env.scene.env_origins.unsqueeze(1)
+
+def cup_ee_distance(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The distance between the end-effector and the cup."""
+    ee_tcp_pos = env.scene["ee_frame"].data.target_pos_w[:, 0, :3]
+    cup_pos = env.scene["cup"].data.root_pos_w[:, :3]
+    
+    return torch.norm(cup_pos - ee_tcp_pos, dim=-1)
+
+def cup_height(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """The height of the cup above the ground."""
+    cup_pos_z = env.scene["cup"].data.root_pos_w[:, 2]
+    return cup_pos_z
+
+ENDFILE
+
+FILE: task_name/mdp/rewards.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+import torch
+
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the MDP."""
+    
+    # Approach reward to cup
+    approach_cup = RewTerm(
+        func=lambda env, threshold=0.15: 1.0 / (1.0 + ((cup_ee_distance(env) - threshold) ** 2)),
+        params={"threshold": 0.15},
+        weight=5.0,
+    )
+    
+    # Grasp reward
+    grasp_cup = RewTerm(
+        func=lambda env, asset_cfg: torch.where(
+            (env.scene["cup"].data.contact_forces[asset_cfg.joint_names] > 0).any(dim=-1),
+            -torch.sum(env.scene["panda_arm"].data.joint_pos[:, asset_cfg.joint_names], dim=-1) * 5,
+            0.0
+        ),
+        params={"asset_cfg": SceneEntityCfg("cup")},
+        weight=2.0,
+    )
+    
+    # Lift reward (when cup is lifted above initial position)
+    lift_cup = RewTerm(
+        func=lambda env, threshold=0.1: torch.where(
+            env.scene["cup"].data.root_pos_w[:, 2] > -0.4 + threshold,
+            1.0 / (1.0 + ((env.scene["cup"].data.root_pos_w[:, 2] + 0.4) ** 2)),
+            0.0
+        ),
+        params={"threshold": 0.1},
+        weight=3.0,
+    )
+
+def action_rate_l2(env: ManagerBasedRLEnv, coefficient=-1e-4) -> torch.Tensor:
+    """Penalty for high control frequency."""
+    return env.scene["panda_arm"].data.action_rate_l2 * coefficient
+
+ENDFILE
+
+FILE: task_name/mdp/terminations.py
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+import torch
+
+
+@configclass
+class TerminationsCfg:
+    """Termination terms for the MDP."""
+    
+    # Time out termination
+    time_out = DoneTerm(func=lambda env, max_time=5.0: mdp.time_out(env), params={"time_out": True})
+    
+    # Failure conditions (cup falls)
+    cup_fallen = DoneTerm(
+        func=lambda env, min_height=-0.3: env.scene["cup"].data.root_pos_w[:, 2] < min_height,
+        params={"min_height": -0.3},
+        time_out=True
+    )
+    
+    # Success condition (cup lifted above threshold)
+    cup_lifted_success = DoneTerm(
+        func=lambda env, lift_threshold=0.1: env.scene["cup"].data.root_pos_w[:, 2] > -0.4 + lift_threshold,
+        params={"lift_threshold": 0.1},
+        time_out=False
+    )
+
+def action_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Penalty for high control frequency."""
+    return env.scene["panda_arm"].data.action_rate_l2
+
+ENDFILE
+
+# Note: The remaining template files (__init__.py, config/__init__.py, etc.) are not provided as they were incomplete in the example.
+# We've generated only the necessary parts based on the task description.
+
+``` 
+
+Note: This implementation assumes a simplified version of the lift_cup task. In practice, you would need to complete and customize the remaining template files (__init__.py, config/__init__.py, etc.) according to your specific requirements. The code above includes placeholders that should be replaced with actual values based on your environment setup and robot specifications.
+
+The key components are:
+- Scene configuration for Franka Panda arm and cup
+- Observation functions focusing on end-effector position/pose and cup position/orientation
+- Reward functions guiding the robot to approach, grasp, and lift the cup
+- Termination conditions ensuring the task completes or fails appropriately
+
+Remember to adjust parameters like thresholds, weights, and environment configurations based on your specific simulation setup.
